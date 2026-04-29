@@ -15,7 +15,7 @@ GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 def send_email(to_email, subject, body_html):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    msg["From"] = GMAIL_USER
+    msg["From"] = f"TimesheetPro <{GMAIL_USER}>"
     msg["To"] = to_email
     msg.attach(MIMEText(body_html, "html"))
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
