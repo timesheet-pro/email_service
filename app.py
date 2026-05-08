@@ -1,26 +1,25 @@
-import smtplib
 import os
-from datetime import datetime
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import Mail
 
 app = Flask(__name__)
 CORS(app, origins="*")
 
-GMAIL_USER = os.environ.get("GMAIL_USER")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
+SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY")
+SENDER_EMAIL = os.environ.get("GMAIL_USER")
 
 def send_email(to_email, subject, body_html):
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = f"TimesheetPro <{GMAIL_USER}>"
-    msg["To"] = to_email
-    msg.attach(MIMEText(body_html, "html"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_USER, to_email, msg.as_string())
+    message = Mail(
+        from_email=SENDER_EMAIL,
+        to_emails=to_email,
+        subject=subject,
+        html_content=body_html
+    )
+    sg = SendGridAPIClient(SENDGRID_API_KEY)
+    sg.send(message)
 
 def base_template(content):
     return f"""
@@ -34,17 +33,13 @@ def base_template(content):
     """
 
 def get_subject_and_body(type_, name, period, reason="", app_url="", manager_name="Manager"):
-   
-    from datetime import datetime, timezone, timedelta
     IST = timezone(timedelta(hours=5, minutes=30))
     submitted_date = datetime.now(IST).strftime("%B %d, %Y at %I:%M %p IST")
-   
+
     review_link = f'<a href="{app_url}" style="color:#1a73e8; font-weight:bold;">Review Timesheet →</a>' if app_url else ""
     request_link = f'<a href="{app_url}" style="color:#1a73e8; font-weight:bold;">Review Request →</a>' if app_url else ""
 
     templates = {
-
-        # ── Employee submits timesheet → Manager receives this ──
         "submitted": (
             f"Timesheet Submitted – {period}",
             base_template(f"""
@@ -77,8 +72,6 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
                 <p>{review_link}</p>
             """)
         ),
-
-        # ── Employee requests edit access → Manager receives this ──
         "edit_requested": (
             f"Edit Access Requested – {period}",
             base_template(f"""
@@ -111,8 +104,6 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
                 <p>{request_link}</p>
             """)
         ),
-
-        # ── Manager approves timesheet → Employee receives this ──
         "approved": (
             f"Timesheet Approved – {period}",
             base_template(f"""
@@ -140,8 +131,6 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
                 <p>No further action is required from your side.</p>
             """)
         ),
-
-        # ── Manager rejects timesheet → Employee receives this ──
         "rejected": (
             f"Timesheet Rejected – {period}",
             base_template(f"""
@@ -173,8 +162,6 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
                 <p>Please review the feedback, make necessary corrections and resubmit your timesheet.</p>
             """)
         ),
-
-        # ── Manager approves edit access → Employee receives this ──
         "edit_approved": (
             f"Edit Access Approved – {period}",
             base_template(f"""
@@ -199,8 +186,6 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
                 <p>{review_link}</p>
             """)
         ),
-
-        # ── Manager rejects edit access → Employee receives this ──
         "edit_rejected": (
             f"Edit Access Rejected – {period}",
             base_template(f"""
