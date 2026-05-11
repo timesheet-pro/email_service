@@ -101,7 +101,7 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
                     </tr>
                 </table>
                 <p>⚠️ <strong>Action Required</strong> — Please approve or reject this edit request.</p>
-                <p>{request_link}</p>
+                
             """)
         ),
         "approved": (
@@ -183,7 +183,7 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
                     </tr>
                 </table>
                 <p>You can now log in and make the necessary changes to your timesheet.</p>
-                <p>{review_link}</p>
+                
             """)
         ),
         "edit_rejected": (
