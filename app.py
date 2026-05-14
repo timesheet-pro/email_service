@@ -1,4 +1,6 @@
 import os
+import hashlib
+import time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -11,15 +13,55 @@ CORS(app, origins="*")
 SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY")
 SENDER_EMAIL = os.environ.get("GMAIL_USER")
 
+# ─── Dedup cache (no Redis needed) ───────────────────────────────────────────
+_sent_cache = {}
+DEDUP_WINDOW = 30  # seconds
+
+def _make_key(to, type_, period):
+    window = int(time.time() // DEDUP_WINDOW)
+    raw = f"{to}:{type_}:{period}:{window}"
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+def _is_duplicate(key):
+    now = time.time()
+    expired = [k for k, t in _sent_cache.items() if now - t > DEDUP_WINDOW]
+    for k in expired:
+        del _sent_cache[k]
+    return key in _sent_cache
+
+def _mark_sent(key):
+    _sent_cache[key] = time.time()
+
+
+# ─── Email sender (supports multiple recipients) ──────────────────────────────
 def send_email(to_email, subject, body_html):
+    """
+    to_email can be:
+    - a single email:          "user@example.com"
+    - comma-separated string:  "user1@example.com,user2@example.com"
+    - a list:                  ["user1@example.com", "user2@example.com"]
+
+    SendGrid counts this as 1 API call regardless of recipient count.
+    """
+    if isinstance(to_email, list):
+        recipients = [e.strip() for e in to_email if e.strip()]
+    else:
+        recipients = [e.strip() for e in to_email.split(',') if e.strip()]
+
+    if not recipients:
+        raise ValueError("No valid recipients provided")
+
     message = Mail(
         from_email=SENDER_EMAIL,
-        to_emails=to_email,
+        to_emails=recipients,
         subject=subject,
         html_content=body_html
     )
     sg = SendGridAPIClient(SENDGRID_API_KEY)
-    sg.send(message)
+    response = sg.send(message)
+    print(f"[EMAIL SENT] to={recipients} subject='{subject}' status={response.status_code}")
+    return response
+
 
 def base_template(content):
     return f"""
@@ -36,13 +78,10 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
     IST = timezone(timedelta(hours=5, minutes=30))
     action_date = datetime.now(IST).strftime("%B %d, %Y at %I:%M %p IST")
 
-    # fallback to period if timesheetDate not passed
     ts_date = timesheet_date if timesheet_date else period
-
     review_link = f'<a href="{app_url}" style="color:#1a73e8; font-weight:bold;">Review Timesheet →</a>' if app_url else ""
 
     templates = {
-
         "submitted": (
             f"Timesheet Submitted – {period}",
             base_template(f"""
@@ -223,20 +262,32 @@ def get_subject_and_body(type_, name, period, reason="", app_url="", manager_nam
 
     return templates.get(type_)
 
+
 @app.route("/send-email", methods=["POST"])
 def trigger_email():
-    data         = request.json
-    to           = data.get("to")
-    type_        = data.get("type")
-    name         = data.get("name", "User")
-    period       = data.get("period", "")
-    reason       = data.get("reason", "")
-    app_url      = data.get("appUrl", "")
-    manager_name = data.get("managerName", "Manager")
+    data           = request.json
+    to             = data.get("to")       # accepts string, comma-separated string, or array
+    type_          = data.get("type")
+    name           = data.get("name", "User")
+    period         = data.get("period", "")
+    reason         = data.get("reason", "")
+    app_url        = data.get("appUrl", "")
+    manager_name   = data.get("managerName", "Manager")
     timesheet_date = data.get("timesheetDate", "")
 
-    result = get_subject_and_body(type_, name, period, reason, app_url, manager_name, timesheet_date)
+    if not to or not type_:
+        return jsonify({"error": "Missing required fields: 'to' and 'type'"}), 400
 
+    # Normalise to string for dedup key
+    to_key = ','.join(sorted(to)) if isinstance(to, list) else to
+
+    # Dedup check
+    dedup_key = _make_key(to_key, type_, period)
+    if _is_duplicate(dedup_key):
+        print(f"[DEDUP] Blocked duplicate: {type_} → {to_key}")
+        return jsonify({"message": "Email already sent recently, skipping duplicate."}), 200
+
+    result = get_subject_and_body(type_, name, period, reason, app_url, manager_name, timesheet_date)
     if not result:
         return jsonify({"error": "Invalid email type"}), 400
 
@@ -244,9 +295,12 @@ def trigger_email():
 
     try:
         send_email(to, subject, body)
+        _mark_sent(dedup_key)
         return jsonify({"message": "Email sent!"}), 200
     except Exception as e:
+        print(f"[EMAIL ERROR] type={type_} to={to_key} error={str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
